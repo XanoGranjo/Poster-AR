@@ -1,0 +1,211 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+<body>
+<a-scene
+        mindar-image="imageTargetSrc: minds/targetsT.mind;"
+        color-space="sRGB"
+        renderer="colorManagement: true, physicallyCorrectLights"
+        vr-mode-ui="enabled: false"
+        device-orientation-permission-ui="enabled: false"
+>
+    <a-assets>
+        <a-asset-item id="flower-model" src="glbs/Flor1.glb"></a-asset-item>
+        <a-asset-item id="oil-model" src="glbs/posterP4.glb"></a-asset-item>
+        <a-asset-item id="butterfly-model" src="glbs/butterflyes.glb"></a-asset-item>
+    </a-assets>
+
+    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+    <!-- Target 1 - Flower -->
+    <a-entity mindar-image-target="targetIndex: 0">
+        <a-entity gltf-model="#flower-model" single-animation="speed: 0.2; modelType: flower"></a-entity>
+    </a-entity>
+
+    <!-- Target 2 - Oil -->
+    <a-entity mindar-image-target="targetIndex: 1">
+        <a-entity gltf-model="#oil-model" single-animation="speed: 0.4; modelType: oil"></a-entity>
+    </a-entity>
+
+    <!-- Target 3 - Butterfly -->
+    <a-entity mindar-image-target="targetIndex: 2">
+        <a-entity gltf-model="#butterfly-model" single-animation="speed: 0.3; modelType: butterfly"></a-entity>
+    </a-entity>
+</a-scene>
+
+<script>
+    AFRAME.registerComponent('single-animation', {
+        schema: {
+            speed: {type: 'number', default: 0.3},
+            modelType: {type: 'string', default: ''},
+            colorChangeSpeed: {type: 'number', default: 0.5}
+        },
+
+        init: function () {
+            this.modelLoaded = false;
+            this.animationActive = false;
+            this.mixer = null;
+            this.materials = [];
+            this.originalColors = [];
+            this.colorProgress = 0;
+
+            this.modelConfig = {
+                'flower': {
+                    scale: {x: 1.5, y: 1.5, z: 1.5},
+                    position: {x: 0, y: -0.8, z: 0.5},
+                    targetColor: new THREE.Color('#424231'),
+                    shouldChangeColor: true
+                },
+                'oil': {
+                    scale: {x: 1, y: 1, z: 1},
+                    position: {x: 0, y: -0.5, z: 0.5},
+                    shouldChangeColor: false // Não muda cor para o óleo
+                },
+                'butterfly': {
+                    scale: {x: 3, y: 3, z: 3},
+                    position: {x: 0, y: -0.8, z: -2},
+                    targetColor: new THREE.Color('#433c36'),
+                    shouldChangeColor: true
+                }
+            };
+
+            this.setupModel();
+            this.setupEvents();
+        },
+
+        setupModel: function() {
+            const el = this.el;
+            const config = this.modelConfig[this.data.modelType];
+
+            el.setAttribute('position', `${config.position.x} ${config.position.y} ${config.position.z}`);
+            el.setAttribute('scale', `${config.scale.x} ${config.scale.y} ${config.scale.z}`);
+
+            el.addEventListener('model-loaded', () => {
+                this.modelLoaded = true;
+                const model = el.getObject3D('mesh');
+
+                // Só coleta materiais se for para mudar a cor
+                if (config.shouldChangeColor) {
+                    model.traverse((node) => {
+                        if (node.isMesh && node.material) {
+                            // Converte para material básico se necessário
+                            if (node.material.isGLTFSpecularGlossinessMaterial) {
+                                node.material = new THREE.MeshStandardMaterial({
+                                    color: node.material.color,
+                                    map: node.material.map
+                                });
+                            }
+
+                            this.materials.push(node.material);
+                            this.originalColors.push(node.material.color.clone());
+                        }
+                    });
+                }
+
+                // Configura animações do GLTF
+                if (model.animations && model.animations.length > 0) {
+                    this.mixer = new THREE.AnimationMixer(model);
+                    this.actions = model.animations.map(anim => {
+                        const action = this.mixer.clipAction(anim);
+                        action.setLoop(THREE.LoopOnce);
+                        action.clampWhenFinished = true;
+                        return action;
+                    });
+                }
+            });
+        },
+
+        setupEvents: function() {
+            const parent = this.el.parentEl;
+            const config = this.modelConfig[this.data.modelType];
+
+            parent.addEventListener('targetFound', () => {
+                if (!this.modelLoaded || this.animationActive) return;
+
+                this.animationActive = true;
+                this.colorProgress = 0;
+
+                if (this.mixer) {
+                    this.mixer.time = 0;
+                    this.actions.forEach(action => {
+                        action.reset();
+                        action.play();
+                    });
+
+                    this.clock = new THREE.Clock();
+                    this.animationId = requestAnimationFrame(this.updateAnimation.bind(this));
+                }
+            });
+
+            parent.addEventListener('targetLost', () => {
+                if (config.shouldChangeColor) {
+                    this.restoreOriginalColors();
+                }
+                this.animationActive = false;
+            });
+        },
+
+        updateAnimation: function() {
+            if (!this.animationActive) return;
+
+            const delta = this.clock.getDelta();
+            const config = this.modelConfig[this.data.modelType];
+
+            if (this.mixer) {
+                this.mixer.update(delta);
+            }
+
+            // Atualiza cores apenas para flower e butterfly
+            if (config.shouldChangeColor) {
+                this.updateColors(delta);
+            }
+
+            const animationFinished = this.actions.every(action => action.paused);
+
+            if (!animationFinished || (config.shouldChangeColor && this.colorProgress < 1)) {
+                this.animationId = requestAnimationFrame(this.updateAnimation.bind(this));
+            } else {
+                this.animationActive = false;
+            }
+        },
+
+        updateColors: function(delta) {
+            if (this.materials.length === 0) return;
+
+            const config = this.modelConfig[this.data.modelType];
+            this.colorProgress = Math.min(1, this.colorProgress + delta * this.data.colorChangeSpeed);
+
+            // Interpola entre a cor original e a cor alvo
+            this.materials.forEach((material, index) => {
+                material.color.lerpColors(
+                    this.originalColors[index],
+                    config.targetColor,
+                    this.colorProgress
+                );
+                material.needsUpdate = true;
+            });
+        },
+
+        restoreOriginalColors: function() {
+            this.materials.forEach((material, index) => {
+                material.color.copy(this.originalColors[index]);
+                material.needsUpdate = true;
+            });
+        },
+
+        remove: function() {
+            if (this.animationId) {
+                cancelAnimationFrame(this.animationId);
+            }
+            this.restoreOriginalColors();
+        }
+    });
+</script>
+</body>
+</html>
